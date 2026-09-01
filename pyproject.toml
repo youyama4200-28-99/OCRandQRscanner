@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smartscan-windows"
+version = "0.1.0"
+description = "Automatic QR and PaddleOCR webcam scanner accelerated by OpenVINO"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = { text = "MIT" }
+dependencies = [
+  "numpy==2.3.5",
+  "opencv-contrib-python==4.10.0.84",
+  "openvino==2026.3.1",
+  "paddleocr==3.7.0",
+  "paddlepaddle==3.3.1",
+  "PySide6==6.11.2",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.12,<1"]
+
+[project.gui-scripts]
+smartscan = "smartscan.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
