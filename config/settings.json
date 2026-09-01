@@ -1,0 +1,16 @@
+{
+  "camera": {"index": 0, "width": 1280, "height": 720, "fps": 30},
+  "recognition": {
+    "language": "japan",
+    "minimum_confidence": 0.55,
+    "ocr_interval_seconds": 1.2,
+    "qr_hold_seconds": 1.0,
+    "result_hold_seconds": 3.0,
+    "text_score_threshold": 0.018,
+    "openvino_device": "AUTO",
+    "gate_width": 320,
+    "gate_height": 180
+  },
+  "ui": {"window_title": "SmartScan - QR / OCR", "mirror_preview": false}
+}
+
