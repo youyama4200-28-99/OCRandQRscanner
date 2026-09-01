@@ -39,6 +39,24 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
+## Windows EXEの作成（PyInstaller）
+
+依存環境をセットアップした後、次を実行します。
+
+```powershell
+.\scripts\build.ps1
+```
+
+出力は`dist\SmartScan\SmartScan.exe`です。`config\settings.json`もEXEの隣へコピーされるため、配布後も設定を変更できます。AIランタイムのDLL競合を避ける専用specとフックを`packaging`に用意しています。
+
+ビルド後には、生成したEXE自身でOpenVINO、QR、PaddleOCRの実推論テストが自動実行されます。テストを省略する場合は`-SkipSmokeTest`、ZIPも作る場合は`-Archive`を指定します。
+
+```powershell
+.\scripts\build.ps1 -Archive
+```
+
+標準は`onedir`形式です。フォルダ内の`_internal`やDLLを削除せず、`SmartScan`フォルダ単位で配布してください。OCRモデルは初回利用時に`%LOCALAPPDATA%\SmartScan\paddlex`へダウンロードされます。
+
 ## 設定
 
 設定は [config/settings.json](config/settings.json) にあります。日本語は`japan`、英語は`en`です。`openvino_device`は通常`AUTO`を使い、固定する場合は`CPU`、`GPU`、`NPU`を指定します。

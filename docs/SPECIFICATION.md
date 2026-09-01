@@ -29,3 +29,6 @@ OpenVINOモデルは起動時に演算グラフから構築する。Sobel X/Y畳
 
 QR以外のバーコード、手書き専用認識、履歴の永続保存、クラウド送信、CUDAの自動構成。
 
+## 配布形式
+
+PyInstallerの`onedir`形式を標準とする。専用specでPaddlePaddle、PaddleOCR/PaddleX、OpenVINO、PySide6の動的モジュール・データ・ネイティブライブラリを収集する。設定ファイルはEXE外部へ配置し、OCRモデルはユーザーごとのローカルキャッシュへ保存する。

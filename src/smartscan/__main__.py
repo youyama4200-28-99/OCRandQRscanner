@@ -8,10 +8,17 @@ from pathlib import Path
 from .config import load_settings
 
 
+def default_config_path() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / "config" / "settings.json"
+    return Path("config/settings.json")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Automatic webcam QR and OCR scanner")
-    parser.add_argument("--config", type=Path, default=Path("config/settings.json"))
+    parser.add_argument("--config", type=Path, default=default_config_path())
     parser.add_argument("--diagnose", action="store_true")
+    parser.add_argument("--smoke-test", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -30,6 +37,10 @@ def main(argv: list[str] | None = None) -> int:
         from .diagnostics import run_diagnostics
 
         return run_diagnostics(settings)
+    if args.smoke_test:
+        from .diagnostics import run_packaging_smoke_test
+
+        return run_packaging_smoke_test(settings)
 
     from PySide6.QtWidgets import QApplication, QMessageBox
 
