@@ -23,6 +23,15 @@ class EngineTests(unittest.TestCase):
         encoded = cv2.resize(encoded, None, fx=8, fy=8, interpolation=cv2.INTER_NEAREST)
         self.assertEqual(QrEngine().recognize(encoded).text, "smartscan-test")
 
+    @unittest.skipUnless(hasattr(cv2, "QRCodeEncoder_create"), "OpenCV QR encoder unavailable")
+    def test_qr_round_trip_with_downscaled_scan(self) -> None:
+        encoded = cv2.QRCodeEncoder_create().encode("smartscan-scaled-test")
+        encoded = cv2.copyMakeBorder(encoded, 16, 16, 16, 16, cv2.BORDER_CONSTANT, value=255)
+        encoded = cv2.resize(encoded, (800, 800), interpolation=cv2.INTER_NEAREST)
+        result = QrEngine(max_width=400).recognize(encoded)
+        self.assertEqual(result.text, "smartscan-scaled-test")
+        self.assertGreater(max(x for x, _ in result.items[0].polygon), 400)
+
 
 if __name__ == "__main__":
     unittest.main()

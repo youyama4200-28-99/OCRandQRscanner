@@ -24,10 +24,14 @@ def default_log_directory() -> Path:
     return Path.cwd() / "logs"
 
 
-def configure_logging(log_directory: Path | None = None, level: str = "INFO") -> Path:
+def configure_logging(
+    log_directory: Path | None = None,
+    level: str = "INFO",
+    file_name: str = LOG_FILE_NAME,
+) -> Path:
     directory = (log_directory or default_log_directory()).resolve()
     directory.mkdir(parents=True, exist_ok=True)
-    log_path = directory / LOG_FILE_NAME
+    log_path = directory / file_name
 
     logger = logging.getLogger(LOGGER_NAME)
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))

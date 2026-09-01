@@ -4,10 +4,10 @@ Webカメラ映像からQRコードと文字を自動判別する、Windows 10/1
 
 ## 主な機能
 
-- QRコードを毎フレーム優先検出し、見つからない場面ではOCRへ自動切替
+- QRコードを優先検出し、見つからない場面ではOCRへ自動切替
 - PaddleOCRによる日本語・英数字の文字認識
 - OpenVINO `AUTO`デバイス上の軽量エッジ推論で、OCRをかける価値のあるフレームだけを選別
-- OCRはバックグラウンド実行し、カメラ表示を停止させない
+- OCRはCPUスレッド数を制限した別プロセスで実行し、カメラ表示への影響を抑制
 - 認識文字列の表示、コピー、クリア
 - 起動・カメラ・推論時間・停止箇所を記録するローテーションログ
 - カメラ番号・解像度・認識間隔・言語・閾値をJSONで設定
@@ -42,7 +42,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## ログ
 
-通常のログは`%LOCALAPPDATA%\SmartScan\logs\smartscan.log`へ保存されます。画面右側の「ログフォルダーを開く」から直接確認できます。5 MBごとに切り替わり、過去5ファイルまで保持します。
+通常のログは`%LOCALAPPDATA%\SmartScan\logs\smartscan.log`へ保存されます。OCRワーカーのログは同じ場所の`smartscan-ocr-worker.log`です。画面右側の「ログフォルダーを開く」から直接確認できます。各ログは5 MBごとに切り替わり、過去5ファイルまで保持します。
 
 次の内容を記録します。
 
@@ -74,15 +74,16 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## 設定
 
-設定は [config/settings.json](config/settings.json) にあります。日本語は`japan`、英語は`en`です。`openvino_device`は通常`AUTO`を使い、固定する場合は`CPU`、`GPU`、`NPU`を指定します。
+設定は [config/settings.json](config/settings.json) にあります。日本語は`japan`、英語は`en`です。`openvino_device`は通常`AUTO`を使い、固定する場合は`CPU`、`GPU`、`NPU`を指定します。`ocr_cpu_threads`はOCRワーカーが使うCPUスレッド数、`ocr_interval_seconds`はOCR完了後の待機秒数、`qr_max_width`はQR検出用縮小画像の最大幅です。
 
 ## 自動切替ルール
 
-1. QRを最優先で探索します。
+1. QRを縮小画像で優先探索します。
 2. QR検出時は即座にQRモードへ移り、短時間保持します。
 3. QRがなければOpenVINOで文字エッジスコアを推論します。
-4. スコアが閾値以上ならOCRモードへ移り、設定間隔ごとにPaddleOCRを実行します。
-5. どちらにも該当しなければ探索モードになります。
+4. スコアが閾値以上ならOCRモードへ移り、別プロセスでPaddleOCRを実行します。
+5. OCR完了後は設定されたクールダウン時間を置き、連続実行を防ぎます。
+6. どちらにも該当しなければ探索モードになります。
 
 ## Gitブランチ
 

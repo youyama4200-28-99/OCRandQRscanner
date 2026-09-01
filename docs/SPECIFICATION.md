@@ -10,8 +10,10 @@
 
 ## 非機能要件
 
-- UIスレッドでPaddleOCRを実行しない。
+- UIプロセスでPaddleOCRを実行しない。
 - 同時に複数のPaddleOCR推論を開始しない。
+- PaddleOCRのCPUスレッド数を制限し、完了後にクールダウンを置く。
+- QR検出は縮小画像を用い、設定されたフレーム間隔で実行する。
 - QR探索中でもOCR初期化を待たない。
 - QR検出後に保持時間を置き、モードのちらつきを防止する。
 - ログはユーザーのローカル領域へローテーション保存し、画像と認識文字列は記録しない。
@@ -22,7 +24,7 @@
 ```text
 Webカメラ -> OpenCV -> QRCodeDetector ---------> QR結果
                    |
-                   +-> OpenVINO edge gate -> PaddleOCR worker -> OCR結果
+                   +-> OpenVINO edge gate -> PaddleOCR process -> OCR結果
 ```
 
 OpenVINOモデルは起動時に演算グラフから構築する。Sobel X/Y畳み込みと絶対値平均によりエッジ量を返し、重いPaddleOCRを実行する頻度を制御する。

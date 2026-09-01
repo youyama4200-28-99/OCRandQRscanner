@@ -18,7 +18,10 @@ class CameraSettings:
 class RecognitionSettings:
     language: str = "japan"
     minimum_confidence: float = 0.55
-    ocr_interval_seconds: float = 1.2
+    ocr_interval_seconds: float = 3.0
+    ocr_cpu_threads: int = 2
+    qr_scan_interval_frames: int = 2
+    qr_max_width: int = 640
     qr_hold_seconds: float = 1.0
     result_hold_seconds: float = 3.0
     text_score_threshold: float = 0.018
@@ -87,6 +90,12 @@ def validate_settings(settings: AppSettings) -> None:
         raise ValueError("recognition.minimum_confidence must be between 0 and 1")
     if recognition.ocr_interval_seconds <= 0 or recognition.qr_hold_seconds < 0:
         raise ValueError("recognition intervals are invalid")
+    if recognition.ocr_cpu_threads <= 0:
+        raise ValueError("recognition.ocr_cpu_threads must be positive")
+    if recognition.qr_scan_interval_frames <= 0:
+        raise ValueError("recognition.qr_scan_interval_frames must be positive")
+    if recognition.qr_max_width < 160:
+        raise ValueError("recognition.qr_max_width must be at least 160")
     if recognition.text_score_threshold < 0:
         raise ValueError("recognition.text_score_threshold must be 0 or greater")
     if min(recognition.gate_width, recognition.gate_height) < 16:
