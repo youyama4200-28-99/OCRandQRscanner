@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -7,6 +9,8 @@ import cv2
 import numpy as np
 import openvino as ov
 from openvino import opset13 as ops
+
+logger = logging.getLogger("smartscan.openvino")
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,11 +24,20 @@ class OpenVinoTextGate:
     """OpenVINO graph measuring text-like edge energy in a frame."""
 
     def __init__(self, *, width: int = 320, height: int = 180, device: str = "AUTO") -> None:
+        started_at = time.perf_counter()
         self.width = width
         self.height = height
         self.requested_device = device
         self._core = ov.Core()
         self._compiled = self._core.compile_model(self._build_model(width, height), device)
+        logger.info(
+            "OpenVINO gate initialized; requested_device=%s execution_devices=%s "
+            "available_devices=%s elapsed_ms=%.1f",
+            device,
+            ",".join(self.info.execution_devices),
+            ",".join(self.info.available_devices),
+            (time.perf_counter() - started_at) * 1000,
+        )
 
     @staticmethod
     def _build_model(width: int, height: int) -> ov.Model:

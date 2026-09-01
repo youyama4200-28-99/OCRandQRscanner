@@ -9,6 +9,7 @@ Webカメラ映像からQRコードと文字を自動判別する、Windows 10/1
 - OpenVINO `AUTO`デバイス上の軽量エッジ推論で、OCRをかける価値のあるフレームだけを選別
 - OCRはバックグラウンド実行し、カメラ表示を停止させない
 - 認識文字列の表示、コピー、クリア
+- 起動・カメラ・推論時間・停止箇所を記録するローテーションログ
 - カメラ番号・解像度・認識間隔・言語・閾値をJSONで設定
 - カメラ画像や認識結果をディスクへ保存しないプライバシー優先設計
 
@@ -38,6 +39,20 @@ Set-ExecutionPolicy -Scope Process Bypass
 .\.venv\Scripts\python.exe -m smartscan --diagnose
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
+
+## ログ
+
+通常のログは`%LOCALAPPDATA%\SmartScan\logs\smartscan.log`へ保存されます。画面右側の「ログフォルダーを開く」から直接確認できます。5 MBごとに切り替わり、過去5ファイルまで保持します。
+
+次の内容を記録します。
+
+- 起動、設定読込、終了
+- カメラの接続・切断・連続読取失敗
+- OpenVINOとPaddleOCRの初期化時間、推論時間、例外
+- UI処理が3秒以上戻らなかった場合の停止候補箇所
+- QR/OCR結果の件数と平均信頼度
+
+カメラ画像と認識文字列そのものはログへ保存しません。詳細調査時は`--log-level DEBUG`、保存先を変える場合は`--log-dir <フォルダー>`を指定できます。
 
 ## Windows EXEの作成（PyInstaller）
 

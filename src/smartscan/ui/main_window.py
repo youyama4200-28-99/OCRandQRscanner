@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import logging
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QImage, QPixmap
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -29,11 +32,14 @@ from ..engines.paddle_ocr import PaddleOcrEngine
 from ..engines.qr import QrEngine
 from ..models import RecognitionResult, ScanMode
 
+logger = logging.getLogger("smartscan.ui")
+
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings: AppSettings) -> None:
+    def __init__(self, settings: AppSettings, *, log_path: Path | None = None) -> None:
         super().__init__()
         self.settings = settings
+        self._log_path = log_path
         self.setWindowTitle(settings.ui.window_title)
         self.resize(1180, 760)
         self._camera = Camera(settings.camera)
@@ -49,6 +55,10 @@ class MainWindow(QMainWindow):
         self._last_text = ""
         self._frame_count = 0
         self._last_gate_score = 0.0
+        self._tick_started_at = 0.0
+        self._tick_stage = "idle"
+        self._last_tick_duration = 0.0
+        self._watchdog_stop = threading.Event()
         self._gate: OpenVinoTextGate | None = None
         self._policy = AutoSwitchPolicy(
             text_score_threshold=settings.recognition.text_score_threshold,
@@ -57,11 +67,18 @@ class MainWindow(QMainWindow):
         )
         self._build_ui()
         self._initialize_gate()
+        self._watchdog = threading.Thread(
+            target=self._watch_for_stall,
+            name="ui-stall-watchdog",
+            daemon=True,
+        )
+        self._watchdog.start()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(max(15, round(1000 / settings.camera.fps)))
         if not self._camera.open():
             self._show_camera_error()
+        logger.info("MainWindow initialized")
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -99,6 +116,9 @@ class MainWindow(QMainWindow):
         button_row.addWidget(clear_button)
         reconnect_button = QPushButton("カメラを再接続")
         reconnect_button.clicked.connect(self._reconnect_camera)
+        log_button = QPushButton("ログフォルダーを開く")
+        log_button.setEnabled(self._log_path is not None)
+        log_button.clicked.connect(self._open_log_directory)
         for widget in (title, subtitle, self.mode_label, self.engine_label, self.score_label):
             layout.addWidget(widget)
         layout.addSpacing(10)
@@ -106,6 +126,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.result_box, 1)
         layout.addLayout(button_row)
         layout.addWidget(reconnect_button)
+        layout.addWidget(log_button)
         outer.addWidget(side, 1)
         self.setCentralWidget(root)
         self.setStyleSheet("""
@@ -134,26 +155,54 @@ class MainWindow(QMainWindow):
             devices = ", ".join(self._gate.info.execution_devices)
             self.engine_label.setText(f"OpenVINO: {devices}\nPaddleOCR: 初回OCR時に初期化")
         except Exception as exc:
+            logger.exception("OpenVINO initialization failed; continuing without gate")
             self.engine_label.setText(
                 f"OpenVINO初期化失敗: {type(exc).__name__}: {exc}\nOCRゲートを常時許可"
             )
 
     def _tick(self) -> None:
+        started_at = time.monotonic()
+        self._tick_started_at = started_at
+        self._tick_stage = "collect_ocr_result"
+        try:
+            self._process_tick()
+        except Exception:
+            logger.exception("Unexpected frame processing error; stage=%s", self._tick_stage)
+            self.engine_label.setText(f"フレーム処理エラー: {self._tick_stage}（ログを確認）")
+        finally:
+            duration = time.monotonic() - started_at
+            self._last_tick_duration = duration
+            self._tick_started_at = 0.0
+            self._tick_stage = "idle"
+            if duration >= 0.5:
+                logger.warning("Slow UI frame; elapsed_ms=%.1f", duration * 1000)
+
+    def _process_tick(self) -> None:
         self._collect_ocr_result()
+        self._tick_stage = "camera_read"
+        stage_started_at = time.perf_counter()
         ok, frame = self._camera.read()
+        self._log_slow_stage("camera_read", stage_started_at, 0.2)
         if not ok:
             return
         if self.settings.ui.mirror_preview:
             frame = cv2.flip(frame, 1)
         now = time.monotonic()
+        self._tick_stage = "qr_recognition"
+        stage_started_at = time.perf_counter()
         qr_result = self._qr.recognize(frame)
+        self._log_slow_stage("qr_recognition", stage_started_at, 0.1)
         self._frame_count += 1
         if self._gate is None:
             self._last_gate_score = self.settings.recognition.text_score_threshold
         elif self._frame_count % 3 == 1:
             try:
+                self._tick_stage = "openvino_gate"
+                stage_started_at = time.perf_counter()
                 self._last_gate_score = self._gate.score(frame)
+                self._log_slow_stage("openvino_gate", stage_started_at, 0.1)
             except Exception as exc:
+                logger.exception("OpenVINO gate inference failed; disabling gate")
                 self.engine_label.setText(f"OpenVINO推論失敗: {exc}\nOCRゲートを常時許可")
                 self._gate = None
         decision = self._policy.decide(
@@ -170,11 +219,40 @@ class MainWindow(QMainWindow):
             self._publish("QR", qr_result)
         elif decision.run_ocr:
             self.engine_label.setText("PaddleOCR: 認識中…")
+            logger.info("Submitting PaddleOCR job; frame=%d", self._frame_count)
             self._ocr_future = self._executor.submit(self._paddle.recognize, frame.copy())
         elif now - self._last_ocr_result_at < self.settings.recognition.result_hold_seconds:
             overlay_result = self._last_ocr_result
+        self._tick_stage = "preview_render"
+        stage_started_at = time.perf_counter()
         self._draw_polygons(frame, overlay_result, decision.mode)
         self._show_frame(frame)
+        self._log_slow_stage("preview_render", stage_started_at, 0.1)
+
+    @staticmethod
+    def _log_slow_stage(name: str, started_at: float, threshold_seconds: float) -> None:
+        elapsed = time.perf_counter() - started_at
+        if elapsed >= threshold_seconds:
+            logger.warning("Slow processing stage; stage=%s elapsed_ms=%.1f", name, elapsed * 1000)
+
+    def _watch_for_stall(self) -> None:
+        reported_start = 0.0
+        while not self._watchdog_stop.wait(1.0):
+            started_at = self._tick_started_at
+            if reported_start and started_at != reported_start:
+                logger.warning(
+                    "UI frame processing recovered; elapsed_seconds=%.1f",
+                    self._last_tick_duration,
+                )
+                reported_start = 0.0
+            if started_at and time.monotonic() - started_at >= 3.0:
+                if reported_start != started_at:
+                    reported_start = started_at
+                    logger.warning(
+                        "UI frame processing appears stalled; stage=%s elapsed_seconds=%.1f",
+                        self._tick_stage,
+                        time.monotonic() - started_at,
+                    )
 
     def _collect_ocr_result(self) -> None:
         future = self._ocr_future
@@ -190,6 +268,7 @@ class MainWindow(QMainWindow):
             device = ", ".join(self._gate.info.execution_devices) if self._gate else "無効"
             self.engine_label.setText(f"OpenVINO: {device}\nPaddleOCR: 利用可能")
         except Exception as exc:
+            logger.exception("PaddleOCR future failed")
             self.engine_label.setText(f"PaddleOCRエラー: {type(exc).__name__}: {exc}")
 
     def _publish(self, kind: str, result: RecognitionResult) -> None:
@@ -197,6 +276,12 @@ class MainWindow(QMainWindow):
         if not text or text == self._last_text:
             return
         self._last_text = text
+        logger.info(
+            "Recognition result published; kind=%s items=%d average_confidence=%.3f",
+            kind,
+            len(result.items),
+            result.average_confidence,
+        )
         self.result_box.setPlainText(
             f"[{kind}]  信頼度 {result.average_confidence * 100:.1f}%\n\n{text}"
         )
@@ -244,10 +329,18 @@ class MainWindow(QMainWindow):
         self._last_text = ""
 
     def _reconnect_camera(self) -> None:
+        logger.info("Camera reconnect requested by user")
         if not self._camera.open():
             self._show_camera_error()
 
+    def _open_log_directory(self) -> None:
+        if self._log_path is None:
+            return
+        logger.info("Opening log directory; path=%s", self._log_path.parent)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._log_path.parent)))
+
     def _show_camera_error(self) -> None:
+        logger.error("Camera is unavailable; index=%d", self.settings.camera.index)
         self._set_mode(ScanMode.ERROR)
         self.preview.setText(
             f"カメラ {self.settings.camera.index} を開けません。\n"
@@ -255,7 +348,9 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        logger.info("Application close requested")
         self._timer.stop()
+        self._watchdog_stop.set()
         self._camera.close()
         self._executor.shutdown(wait=False, cancel_futures=True)
         event.accept()

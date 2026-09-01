@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from collections.abc import Iterable
 from typing import Any
 
 from ..models import RecognitionResult, RecognizedItem
+
+logger = logging.getLogger("smartscan.paddle_ocr")
 
 
 def _as_mapping(result: Any) -> dict[str, Any]:
@@ -73,6 +77,8 @@ class PaddleOcrEngine:
     def _initialize(self) -> None:
         if self._ocr is not None:
             return
+        started_at = time.perf_counter()
+        logger.info("PaddleOCR initialization started; language=%s", self.language)
         from paddleocr import PaddleOCR
 
         options = {
@@ -84,10 +90,34 @@ class PaddleOcrEngine:
             # attribute on Windows CPU. The plain CPU path is reliable.
             "enable_mkldnn": False,
         }
-        self._ocr = PaddleOCR(**options)
+        try:
+            self._ocr = PaddleOCR(**options)
+        except Exception:
+            logger.exception("PaddleOCR initialization failed")
+            raise
+        logger.info(
+            "PaddleOCR initialization completed; elapsed_ms=%.1f",
+            (time.perf_counter() - started_at) * 1000,
+        )
 
     def recognize(self, frame: Any) -> RecognitionResult:
-        self._initialize()
-        if hasattr(self._ocr, "predict"):
-            return parse_predict_results(self._ocr.predict(frame), self.minimum_confidence)
-        return parse_legacy_results(self._ocr.ocr(frame, cls=False), self.minimum_confidence)
+        started_at = time.perf_counter()
+        try:
+            self._initialize()
+            if hasattr(self._ocr, "predict"):
+                result = parse_predict_results(self._ocr.predict(frame), self.minimum_confidence)
+            else:
+                result = parse_legacy_results(
+                    self._ocr.ocr(frame, cls=False), self.minimum_confidence
+                )
+        except Exception:
+            logger.exception("PaddleOCR recognition failed")
+            raise
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        log = logger.warning if elapsed_ms >= 2000 else logger.info
+        log(
+            "PaddleOCR recognition completed; items=%d elapsed_ms=%.1f",
+            len(result.items),
+            elapsed_ms,
+        )
+        return result
