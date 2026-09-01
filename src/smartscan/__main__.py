@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     application.setApplicationName("SmartScan")
     application.setStyle("Fusion")
     try:
-        window = MainWindow(settings, log_path=log_path)
+        window = MainWindow(settings, log_path=log_path, log_level=args.log_level)
         window.show()
         logger.info("Main window shown; entering Qt event loop")
         exit_code = application.exec()

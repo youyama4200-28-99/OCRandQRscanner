@@ -20,10 +20,13 @@ class AutoSwitchPolicyTests(unittest.TestCase):
     def test_ocr_is_throttled(self) -> None:
         first = self.policy.decide(now=1.0, qr_found=False, text_score=0.5, ocr_busy=False)
         second = self.policy.decide(now=1.1, qr_found=False, text_score=0.5, ocr_busy=False)
+        self.policy.ocr_completed(now=2.0)
         third = self.policy.decide(now=2.6, qr_found=False, text_score=0.5, ocr_busy=False)
+        fourth = self.policy.decide(now=3.5, qr_found=False, text_score=0.5, ocr_busy=False)
         self.assertTrue(first.run_ocr)
         self.assertFalse(second.run_ocr)
-        self.assertTrue(third.run_ocr)
+        self.assertFalse(third.run_ocr)
+        self.assertTrue(fourth.run_ocr)
 
     def test_blank_frame_stays_in_search_mode(self) -> None:
         decision = self.policy.decide(now=1.0, qr_found=False, text_score=0.001, ocr_busy=False)

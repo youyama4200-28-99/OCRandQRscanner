@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import importlib.metadata
+import multiprocessing
 import os
 import platform
 import sys
 import traceback
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -61,7 +63,7 @@ def run_packaging_smoke_test(settings: AppSettings) -> int:
         import paddlex
         from PySide6.QtCore import qVersion
 
-        from .engines.paddle_ocr import PaddleOcrEngine
+        from .engines.paddle_ocr import initialize_ocr_worker, recognize_in_worker
         from .engines.qr import QrEngine
 
         messages.append(
@@ -110,10 +112,24 @@ def run_packaging_smoke_test(settings: AppSettings) -> int:
             6,
             cv2.LINE_AA,
         )
-        result = PaddleOcrEngine(language="japan", minimum_confidence=0.2).recognize(ocr_image)
+        smoke_log = os.environ.get("SMARTSCAN_SMOKE_LOG")
+        worker_log_directory = str(Path(smoke_log).parent if smoke_log else Path.cwd() / "logs")
+        with ProcessPoolExecutor(
+            max_workers=1,
+            mp_context=multiprocessing.get_context("spawn"),
+            initializer=initialize_ocr_worker,
+            initargs=(
+                "japan",
+                0.2,
+                settings.recognition.ocr_cpu_threads,
+                worker_log_directory,
+                "INFO",
+            ),
+        ) as executor:
+            result = executor.submit(recognize_in_worker, ocr_image).result(timeout=120)
         if not result.items:
             raise RuntimeError("PaddleOCR returned no results")
-        messages.append(f"PaddleOCR: OK ({result.text!r})")
+        messages.append(f"PaddleOCR process: OK ({result.text!r})")
     except Exception:
         exit_code = 1
         messages.append(traceback.format_exc())

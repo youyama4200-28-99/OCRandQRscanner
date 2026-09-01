@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,7 @@ from ..camera import Camera
 from ..config import AppSettings
 from ..controller import AutoSwitchPolicy
 from ..engines.openvino_gate import OpenVinoTextGate
-from ..engines.paddle_ocr import PaddleOcrEngine
+from ..engines.paddle_ocr import initialize_ocr_worker, recognize_in_worker
 from ..engines.qr import QrEngine
 from ..models import RecognitionResult, ScanMode
 
@@ -36,24 +37,40 @@ logger = logging.getLogger("smartscan.ui")
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings: AppSettings, *, log_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        settings: AppSettings,
+        *,
+        log_path: Path | None = None,
+        log_level: str = "INFO",
+    ) -> None:
         super().__init__()
         self.settings = settings
         self._log_path = log_path
         self.setWindowTitle(settings.ui.window_title)
         self.resize(1180, 760)
         self._camera = Camera(settings.camera)
-        self._qr = QrEngine()
-        self._paddle = PaddleOcrEngine(
-            language=settings.recognition.language,
-            minimum_confidence=settings.recognition.minimum_confidence,
+        recognition = settings.recognition
+        self._qr = QrEngine(max_width=recognition.qr_max_width)
+        log_directory = str(log_path.parent if log_path else Path.cwd() / "logs")
+        self._executor = ProcessPoolExecutor(
+            max_workers=1,
+            mp_context=multiprocessing.get_context("spawn"),
+            initializer=initialize_ocr_worker,
+            initargs=(
+                recognition.language,
+                recognition.minimum_confidence,
+                recognition.ocr_cpu_threads,
+                log_directory,
+                log_level,
+            ),
         )
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="paddle-ocr")
         self._ocr_future: Future[RecognitionResult] | None = None
         self._last_ocr_result = RecognitionResult()
         self._last_ocr_result_at = 0.0
         self._last_text = ""
         self._frame_count = 0
+        self._last_qr_result = RecognitionResult()
         self._last_gate_score = 0.0
         self._tick_started_at = 0.0
         self._tick_stage = "idle"
@@ -188,11 +205,13 @@ class MainWindow(QMainWindow):
         if self.settings.ui.mirror_preview:
             frame = cv2.flip(frame, 1)
         now = time.monotonic()
-        self._tick_stage = "qr_recognition"
-        stage_started_at = time.perf_counter()
-        qr_result = self._qr.recognize(frame)
-        self._log_slow_stage("qr_recognition", stage_started_at, 0.1)
         self._frame_count += 1
+        if (self._frame_count - 1) % self.settings.recognition.qr_scan_interval_frames == 0:
+            self._tick_stage = "qr_recognition"
+            stage_started_at = time.perf_counter()
+            self._last_qr_result = self._qr.recognize(frame)
+            self._log_slow_stage("qr_recognition", stage_started_at, 0.1)
+        qr_result = self._last_qr_result
         if self._gate is None:
             self._last_gate_score = self.settings.recognition.text_score_threshold
         elif self._frame_count % 3 == 1:
@@ -220,7 +239,7 @@ class MainWindow(QMainWindow):
         elif decision.run_ocr:
             self.engine_label.setText("PaddleOCR: 認識中…")
             logger.info("Submitting PaddleOCR job; frame=%d", self._frame_count)
-            self._ocr_future = self._executor.submit(self._paddle.recognize, frame.copy())
+            self._ocr_future = self._executor.submit(recognize_in_worker, frame.copy())
         elif now - self._last_ocr_result_at < self.settings.recognition.result_hold_seconds:
             overlay_result = self._last_ocr_result
         self._tick_stage = "preview_render"
@@ -259,6 +278,7 @@ class MainWindow(QMainWindow):
         if future is None or not future.done():
             return
         self._ocr_future = None
+        self._policy.ocr_completed(time.monotonic())
         try:
             result = future.result()
             self._last_ocr_result = result

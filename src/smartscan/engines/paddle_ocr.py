@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
+from ..app_logging import configure_logging
 from ..models import RecognitionResult, RecognizedItem
 
 logger = logging.getLogger("smartscan.paddle_ocr")
@@ -69,9 +72,10 @@ def parse_legacy_results(results: Any, minimum_confidence: float) -> Recognition
 class PaddleOcrEngine:
     """Lazy PaddleOCR adapter initialized inside the single OCR worker."""
 
-    def __init__(self, *, language: str, minimum_confidence: float) -> None:
+    def __init__(self, *, language: str, minimum_confidence: float, cpu_threads: int = 2) -> None:
         self.language = language
         self.minimum_confidence = minimum_confidence
+        self.cpu_threads = cpu_threads
         self._ocr: Any | None = None
 
     def _initialize(self) -> None:
@@ -89,6 +93,7 @@ class PaddleOcrEngine:
             # PaddlePaddle 3.3.1 + PP-OCRv6 uses an unsupported oneDNN PIR
             # attribute on Windows CPU. The plain CPU path is reliable.
             "enable_mkldnn": False,
+            "cpu_threads": self.cpu_threads,
         }
         try:
             self._ocr = PaddleOCR(**options)
@@ -121,3 +126,34 @@ class PaddleOcrEngine:
             elapsed_ms,
         )
         return result
+
+
+_worker_engine: PaddleOcrEngine | None = None
+
+
+def initialize_ocr_worker(
+    language: str,
+    minimum_confidence: float,
+    cpu_threads: int,
+    log_directory: str,
+    log_level: str,
+) -> None:
+    """Initialize process-local OCR state without sharing the UI process GIL."""
+    global _worker_engine
+    thread_count = str(cpu_threads)
+    os.environ["OMP_NUM_THREADS"] = thread_count
+    os.environ["OPENBLAS_NUM_THREADS"] = thread_count
+    os.environ["MKL_NUM_THREADS"] = thread_count
+    configure_logging(Path(log_directory), log_level, "smartscan-ocr-worker.log")
+    logger.info("OCR worker process started; cpu_threads=%d", cpu_threads)
+    _worker_engine = PaddleOcrEngine(
+        language=language,
+        minimum_confidence=minimum_confidence,
+        cpu_threads=cpu_threads,
+    )
+
+
+def recognize_in_worker(frame: Any) -> RecognitionResult:
+    if _worker_engine is None:
+        raise RuntimeError("OCR worker is not initialized")
+    return _worker_engine.recognize(frame)
