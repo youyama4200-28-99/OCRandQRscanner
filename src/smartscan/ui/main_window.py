@@ -4,7 +4,7 @@ import logging
 import multiprocessing
 import threading
 import time
-from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -25,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..camera import Camera
+from ..camera import Camera, discover_camera_indices
 from ..config import AppSettings
 from ..controller import AutoSwitchPolicy
 from ..engines.openvino_gate import OpenVinoTextGate
@@ -66,6 +67,11 @@ class MainWindow(QMainWindow):
             ),
         )
         self._ocr_future: Future[RecognitionResult] | None = None
+        self._camera_scan_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="camera-discovery"
+        )
+        self._camera_scan_future: Future[tuple[int, ...]] | None = None
+        self._updating_camera_combo = False
         self._last_ocr_result = RecognitionResult()
         self._last_ocr_result_at = 0.0
         self._last_text = ""
@@ -95,6 +101,7 @@ class MainWindow(QMainWindow):
         self._timer.start(max(15, round(1000 / settings.camera.fps)))
         if not self._camera.open():
             self._show_camera_error()
+        self._start_camera_scan()
         logger.info("MainWindow initialized")
 
     def _build_ui(self) -> None:
@@ -117,6 +124,19 @@ class MainWindow(QMainWindow):
         title = QLabel("SmartScan", objectName="title")
         subtitle = QLabel("QR / OCR 自動認識", objectName="subtitle")
         self.mode_label = QLabel(ScanMode.STARTING.value, objectName="modeBadge")
+        camera_title = QLabel("カメラ", objectName="sectionTitle")
+        camera_row = QHBoxLayout()
+        self.camera_combo = QComboBox()
+        self.camera_combo.addItem(
+            f"カメラ {self.settings.camera.index}", self.settings.camera.index
+        )
+        self.camera_combo.currentIndexChanged.connect(self._on_camera_selected)
+        self.camera_scan_button = QPushButton("再検索")
+        self.camera_scan_button.clicked.connect(self._start_camera_scan)
+        camera_row.addWidget(self.camera_combo, 1)
+        camera_row.addWidget(self.camera_scan_button)
+        self.camera_status_label = QLabel("カメラを確認中…")
+        self.camera_status_label.setWordWrap(True)
         self.engine_label = QLabel("AIエンジンを準備中")
         self.engine_label.setWordWrap(True)
         self.score_label = QLabel("文字スコア: --")
@@ -136,8 +156,12 @@ class MainWindow(QMainWindow):
         log_button = QPushButton("ログフォルダーを開く")
         log_button.setEnabled(self._log_path is not None)
         log_button.clicked.connect(self._open_log_directory)
-        for widget in (title, subtitle, self.mode_label, self.engine_label, self.score_label):
+        for widget in (title, subtitle, self.mode_label, camera_title):
             layout.addWidget(widget)
+        layout.addLayout(camera_row)
+        layout.addWidget(self.camera_status_label)
+        layout.addWidget(self.engine_label)
+        layout.addWidget(self.score_label)
         layout.addSpacing(10)
         layout.addWidget(result_title)
         layout.addWidget(self.result_box, 1)
@@ -156,6 +180,10 @@ class MainWindow(QMainWindow):
                 padding: 9px 12px; font-weight: 700; font-size: 18px; }
             QPlainTextEdit { background: #0d1115; border: 1px solid #2b3741;
                 border-radius: 8px; padding: 8px; selection-background-color: #225f7c; }
+            QComboBox { background: #0d1115; border: 1px solid #2b3741;
+                border-radius: 7px; padding: 8px; color: white; }
+            QComboBox QAbstractItemView { background: #171d23; color: white;
+                selection-background-color: #225f7c; }
             QPushButton { background: #237da3; border: 0; border-radius: 7px;
                 padding: 9px 12px; color: white; font-weight: 600; }
             QPushButton:hover { background: #2e91ba; }
@@ -195,6 +223,7 @@ class MainWindow(QMainWindow):
                 logger.warning("Slow UI frame; elapsed_ms=%.1f", duration * 1000)
 
     def _process_tick(self) -> None:
+        self._collect_camera_scan_result()
         self._collect_ocr_result()
         self._tick_stage = "camera_read"
         stage_started_at = time.perf_counter()
@@ -353,17 +382,99 @@ class MainWindow(QMainWindow):
         if not self._camera.open():
             self._show_camera_error()
 
+    def _start_camera_scan(self) -> None:
+        if self._camera_scan_future is not None:
+            return
+        excluded = frozenset({self._camera.current_index}) if self._camera.is_open else frozenset()
+        self.camera_scan_button.setEnabled(False)
+        self.camera_status_label.setText("利用可能なカメラを検索中…")
+        self._camera_scan_future = self._camera_scan_executor.submit(
+            discover_camera_indices,
+            self.settings.camera.scan_max_index,
+            excluded_indices=excluded,
+        )
+
+    def _collect_camera_scan_result(self) -> None:
+        future = self._camera_scan_future
+        if future is None or not future.done():
+            return
+        self._camera_scan_future = None
+        self.camera_scan_button.setEnabled(True)
+        try:
+            indices = set(future.result())
+            if self._camera.is_open:
+                indices.add(self._camera.current_index)
+            if not indices:
+                indices.add(self.settings.camera.index)
+            self._populate_camera_combo(sorted(indices), self._camera.current_index)
+            self.camera_status_label.setText(f"{len(indices)}台のカメラを検出")
+        except Exception:
+            logger.exception("Camera discovery failed")
+            self.camera_status_label.setText("カメラの検索に失敗しました（ログを確認）")
+
+    def _populate_camera_combo(self, indices: list[int], selected_index: int) -> None:
+        self._updating_camera_combo = True
+        try:
+            self.camera_combo.clear()
+            selected_combo_index = 0
+            for combo_index, camera_index in enumerate(indices):
+                self.camera_combo.addItem(f"カメラ {camera_index}", camera_index)
+                if camera_index == selected_index:
+                    selected_combo_index = combo_index
+            self.camera_combo.setCurrentIndex(selected_combo_index)
+        finally:
+            self._updating_camera_combo = False
+
+    def _on_camera_selected(self, combo_index: int) -> None:
+        if self._updating_camera_combo or combo_index < 0:
+            return
+        camera_index = self.camera_combo.itemData(combo_index)
+        if not isinstance(camera_index, int) or camera_index == self._camera.current_index:
+            return
+        previous_index = self._camera.current_index
+        self.camera_status_label.setText(f"カメラ {camera_index} に切り替え中…")
+        logger.info(
+            "Camera selection changed; previous_index=%d requested_index=%d",
+            previous_index,
+            camera_index,
+        )
+        if self._camera.open(camera_index):
+            self._last_qr_result = RecognitionResult()
+            self.camera_status_label.setText(f"カメラ {camera_index} を使用中")
+            return
+
+        logger.error("Selected camera could not be opened; index=%d", camera_index)
+        restored = self._camera.open(previous_index)
+        self._select_camera_combo_value(previous_index)
+        if restored:
+            self.camera_status_label.setText(
+                f"カメラ {camera_index} を開けないため、カメラ {previous_index} に戻しました"
+            )
+        else:
+            self._show_camera_error(camera_index)
+
+    def _select_camera_combo_value(self, camera_index: int) -> None:
+        for combo_index in range(self.camera_combo.count()):
+            if self.camera_combo.itemData(combo_index) == camera_index:
+                self._updating_camera_combo = True
+                try:
+                    self.camera_combo.setCurrentIndex(combo_index)
+                finally:
+                    self._updating_camera_combo = False
+                return
+
     def _open_log_directory(self) -> None:
         if self._log_path is None:
             return
         logger.info("Opening log directory; path=%s", self._log_path.parent)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._log_path.parent)))
 
-    def _show_camera_error(self) -> None:
-        logger.error("Camera is unavailable; index=%d", self.settings.camera.index)
+    def _show_camera_error(self, camera_index: int | None = None) -> None:
+        camera_index = self._camera.current_index if camera_index is None else camera_index
+        logger.error("Camera is unavailable; index=%d", camera_index)
         self._set_mode(ScanMode.ERROR)
         self.preview.setText(
-            f"カメラ {self.settings.camera.index} を開けません。\n"
+            f"カメラ {camera_index} を開けません。\n"
             "他のアプリが使用していないか確認し、再接続してください。"
         )
 
@@ -372,5 +483,6 @@ class MainWindow(QMainWindow):
         self._timer.stop()
         self._watchdog_stop.set()
         self._camera.close()
+        self._camera_scan_executor.shutdown(wait=False, cancel_futures=True)
         self._executor.shutdown(wait=False, cancel_futures=True)
         event.accept()

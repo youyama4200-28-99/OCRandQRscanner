@@ -50,12 +50,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Settings error: {exc}", file=sys.stderr)
         return 2
     logger.info(
-        "Settings loaded; camera=%d resolution=%dx%d fps=%d device=%s",
+        "Settings loaded; camera=%d resolution=%dx%d fps=%d device=%s ocr_cpu_threads=%d",
         settings.camera.index,
         settings.camera.width,
         settings.camera.height,
         settings.camera.fps,
         settings.recognition.openvino_device,
+        settings.recognition.ocr_cpu_threads,
     )
     if args.diagnose:
         from .diagnostics import run_diagnostics

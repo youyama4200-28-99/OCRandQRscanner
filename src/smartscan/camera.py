@@ -11,9 +11,41 @@ from .config import CameraSettings
 logger = logging.getLogger("smartscan.camera")
 
 
+def discover_camera_indices(
+    max_index: int, *, excluded_indices: frozenset[int] = frozenset()
+) -> tuple[int, ...]:
+    """Probe DirectShow camera indices without blocking the UI thread."""
+    started_at = time.perf_counter()
+    found: list[int] = []
+    logger.info(
+        "Camera discovery started; max_index=%d excluded=%s",
+        max_index,
+        sorted(excluded_indices),
+    )
+    for index in range(max_index + 1):
+        if index in excluded_indices:
+            continue
+        capture = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if not capture.isOpened():
+            capture.release()
+            capture = cv2.VideoCapture(index)
+        try:
+            if capture.isOpened():
+                found.append(index)
+        finally:
+            capture.release()
+    logger.info(
+        "Camera discovery completed; indices=%s elapsed_ms=%.1f",
+        found,
+        (time.perf_counter() - started_at) * 1000,
+    )
+    return tuple(found)
+
+
 class Camera:
     def __init__(self, settings: CameraSettings) -> None:
         self.settings = settings
+        self._index = settings.index
         self._capture: Any | None = None
         self._read_failures = 0
 
@@ -21,24 +53,33 @@ class Camera:
     def is_open(self) -> bool:
         return bool(self._capture is not None and self._capture.isOpened())
 
-    def open(self) -> bool:
+    @property
+    def current_index(self) -> int:
+        return self._index
+
+    def open(self, index: int | None = None) -> bool:
+        target_index = self._index if index is None else index
         started_at = time.perf_counter()
-        logger.info("Opening camera; index=%d backend=DSHOW", self.settings.index)
+        logger.info("Opening camera; index=%d backend=DSHOW", target_index)
         self.close()
-        capture = cv2.VideoCapture(self.settings.index, cv2.CAP_DSHOW)
+        capture = cv2.VideoCapture(target_index, cv2.CAP_DSHOW)
         if not capture.isOpened():
             logger.warning("DirectShow camera open failed; retrying with default backend")
             capture.release()
-            capture = cv2.VideoCapture(self.settings.index)
+            capture = cv2.VideoCapture(target_index)
         capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.settings.width)
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.settings.height)
         capture.set(cv2.CAP_PROP_FPS, self.settings.fps)
         capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self._capture = capture
         opened = capture.isOpened()
+        if opened:
+            self._index = target_index
         self._read_failures = 0
         logger.info(
-            "Camera open completed; success=%s backend=%s actual=%dx%d fps=%.1f elapsed_ms=%.1f",
+            "Camera open completed; index=%d success=%s backend=%s actual=%dx%d "
+            "fps=%.1f elapsed_ms=%.1f",
+            target_index,
             opened,
             capture.getBackendName() if opened else "unavailable",
             round(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
