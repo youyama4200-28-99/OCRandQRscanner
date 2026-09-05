@@ -11,6 +11,38 @@ from .config import CameraSettings
 
 logger = logging.getLogger("smartscan.camera")
 
+_WINDOWS_BACKENDS = (
+    ("MSMF", cv2.CAP_MSMF),
+    ("DSHOW", cv2.CAP_DSHOW),
+)
+
+
+def _open_capture(index: int, *, msmf_attempts: int = 1) -> tuple[Any, str]:
+    for backend_name, backend in _WINDOWS_BACKENDS:
+        attempts = max(1, msmf_attempts) if backend_name == "MSMF" else 1
+        for attempt in range(attempts):
+            capture = cv2.VideoCapture(index, backend)
+            if capture.isOpened():
+                if attempt:
+                    logger.info(
+                        "Camera backend retry succeeded; index=%d backend=%s attempt=%d",
+                        index,
+                        backend_name,
+                        attempt + 1,
+                    )
+                return capture, backend_name
+            capture.release()
+            if attempt + 1 < attempts:
+                logger.warning(
+                    "Camera backend open failed; index=%d backend=%s attempt=%d retrying",
+                    index,
+                    backend_name,
+                    attempt + 1,
+                )
+                time.sleep(0.25)
+    capture = cv2.VideoCapture(index)
+    return capture, "DEFAULT"
+
 
 def discover_camera_indices(
     max_index: int, *, excluded_indices: frozenset[int] = frozenset()
@@ -26,10 +58,7 @@ def discover_camera_indices(
     for index in range(max_index + 1):
         if index in excluded_indices:
             continue
-        capture = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-        if not capture.isOpened():
-            capture.release()
-            capture = cv2.VideoCapture(index)
+        capture, _backend_name = _open_capture(index)
         try:
             if capture.isOpened():
                 found.append(index)
@@ -68,14 +97,11 @@ class Camera:
     def open(self, index: int | None = None) -> bool:
         target_index = self._index if index is None else index
         started_at = time.perf_counter()
-        logger.info("Opening camera; index=%d backend=DSHOW", target_index)
+        logger.info("Opening camera; index=%d preferred_backend=MSMF", target_index)
         self.close()
-        capture = cv2.VideoCapture(target_index, cv2.CAP_DSHOW)
-        if not capture.isOpened():
-            logger.warning("DirectShow camera open failed; retrying with default backend")
-            capture.release()
-            capture = cv2.VideoCapture(target_index)
-        capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        capture, backend_name = _open_capture(target_index, msmf_attempts=2)
+        if backend_name == "DSHOW":
+            capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.settings.width)
         capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.settings.height)
         capture.set(cv2.CAP_PROP_FPS, self.settings.fps)
@@ -90,7 +116,7 @@ class Camera:
             "fps=%.1f elapsed_ms=%.1f",
             target_index,
             opened,
-            capture.getBackendName() if opened else "unavailable",
+            backend_name if opened else "unavailable",
             round(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
             round(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
             capture.get(cv2.CAP_PROP_FPS),
@@ -115,7 +141,7 @@ class Camera:
         with self._frame_lock:
             if self._latest_frame is None or self._latest_sequence == self._last_read_sequence:
                 return False, None
-            frame = self._latest_frame.copy()
+            frame = self._latest_frame
             self._last_read_sequence = self._latest_sequence
         return True, frame
 
