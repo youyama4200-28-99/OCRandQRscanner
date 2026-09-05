@@ -12,6 +12,7 @@ class CameraSettings:
     width: int = 1280
     height: int = 720
     fps: int = 30
+    scan_max_index: int = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,7 +20,7 @@ class RecognitionSettings:
     language: str = "japan"
     minimum_confidence: float = 0.55
     ocr_interval_seconds: float = 3.0
-    ocr_cpu_threads: int = 2
+    ocr_cpu_threads: int = 4
     qr_scan_interval_frames: int = 2
     qr_max_width: int = 640
     qr_hold_seconds: float = 1.0
@@ -86,6 +87,8 @@ def validate_settings(settings: AppSettings) -> None:
         raise ValueError("camera.index must be 0 or greater")
     if min(camera.width, camera.height, camera.fps) <= 0:
         raise ValueError("camera width, height and fps must be positive")
+    if not 0 <= camera.scan_max_index <= 20:
+        raise ValueError("camera.scan_max_index must be between 0 and 20")
     if not 0 <= recognition.minimum_confidence <= 1:
         raise ValueError("recognition.minimum_confidence must be between 0 and 1")
     if recognition.ocr_interval_seconds <= 0 or recognition.qr_hold_seconds < 0:

@@ -9,6 +9,7 @@ Webカメラ映像からQRコードと文字を自動判別する、Windows 10/1
 - OpenVINO `AUTO`デバイス上の軽量エッジ推論で、OCRをかける価値のあるフレームだけを選別
 - OCRはCPUスレッド数を制限した別プロセスで実行し、カメラ表示への影響を抑制
 - 認識文字列の表示、コピー、クリア
+- 接続されている複数カメラのバックグラウンド検索と画面上での切替
 - 起動・カメラ・推論時間・停止箇所を記録するローテーションログ
 - カメラ番号・解像度・認識間隔・言語・閾値をJSONで設定
 - カメラ画像や認識結果をディスクへ保存しないプライバシー優先設計
@@ -74,7 +75,9 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 ## 設定
 
-設定は [config/settings.json](config/settings.json) にあります。日本語は`japan`、英語は`en`です。`openvino_device`は通常`AUTO`を使い、固定する場合は`CPU`、`GPU`、`NPU`を指定します。`ocr_cpu_threads`はOCRワーカーが使うCPUスレッド数、`ocr_interval_seconds`はOCR完了後の待機秒数、`qr_max_width`はQR検出用縮小画像の最大幅です。
+設定は [config/settings.json](config/settings.json) にあります。日本語は`japan`、英語は`en`です。`openvino_device`は通常`AUTO`を使い、固定する場合は`CPU`、`GPU`、`NPU`を指定します。`ocr_cpu_threads`はOCRワーカーが使うCPUスレッド数、`ocr_interval_seconds`はOCR完了後の待機秒数、`qr_max_width`はQR検出用縮小画像の最大幅です。`camera.scan_max_index`は画面の「再検索」で確認するカメラインデックスの上限です。
+
+起動後、利用可能なカメラは画面右側のプルダウンから切り替えられます。「再検索」を押すと、現在使用中のカメラを維持したままバックグラウンドで再検出します。画面での選択は現在の起動中だけ有効です。次回起動時の既定値は`camera.index`で指定します。
 
 ## 自動切替ルール
 
