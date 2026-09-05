@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import cv2
 
-from smartscan.camera import Camera, discover_camera_indices
+from smartscan.camera import Camera, _open_capture, discover_camera_indices
 from smartscan.config import CameraSettings
 
 
@@ -47,6 +47,53 @@ class FakeCapture:
 
 
 class CameraTests(unittest.TestCase):
+    def test_open_capture_prefers_media_foundation(self) -> None:
+        calls: list[tuple[int, int | None]] = []
+
+        def create_capture(index: int, backend: int | None = None) -> FakeCapture:
+            calls.append((index, backend))
+            return FakeCapture(index, {1})
+
+        with patch("smartscan.camera.cv2.VideoCapture", side_effect=create_capture):
+            capture, backend_name = _open_capture(1)
+            capture.release()
+
+        self.assertEqual(backend_name, "MSMF")
+        self.assertEqual(calls, [(1, cv2.CAP_MSMF)])
+
+    def test_open_capture_falls_back_to_directshow(self) -> None:
+        calls: list[tuple[int, int | None]] = []
+
+        def create_capture(index: int, backend: int | None = None) -> FakeCapture:
+            calls.append((index, backend))
+            opened = {index} if backend == cv2.CAP_DSHOW else set()
+            return FakeCapture(index, opened)
+
+        with patch("smartscan.camera.cv2.VideoCapture", side_effect=create_capture):
+            capture, backend_name = _open_capture(1)
+            capture.release()
+
+        self.assertEqual(backend_name, "DSHOW")
+        self.assertEqual(calls, [(1, cv2.CAP_MSMF), (1, cv2.CAP_DSHOW)])
+
+    def test_open_capture_can_retry_media_foundation(self) -> None:
+        calls: list[tuple[int, int | None]] = []
+
+        def create_capture(index: int, backend: int | None = None) -> FakeCapture:
+            calls.append((index, backend))
+            opened = {index} if len(calls) == 2 else set()
+            return FakeCapture(index, opened)
+
+        with (
+            patch("smartscan.camera.cv2.VideoCapture", side_effect=create_capture),
+            patch("smartscan.camera.time.sleep"),
+        ):
+            capture, backend_name = _open_capture(1, msmf_attempts=2)
+            capture.release()
+
+        self.assertEqual(backend_name, "MSMF")
+        self.assertEqual(calls, [(1, cv2.CAP_MSMF), (1, cv2.CAP_MSMF)])
+
     def test_discovery_returns_open_indices_and_respects_exclusions(self) -> None:
         opened = {0, 2}
         captures: list[FakeCapture] = []

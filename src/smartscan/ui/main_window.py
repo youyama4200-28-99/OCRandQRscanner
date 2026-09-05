@@ -71,10 +71,20 @@ class MainWindow(QMainWindow):
             max_workers=1, thread_name_prefix="camera-discovery"
         )
         self._camera_scan_future: Future[tuple[int, ...]] | None = None
+        self._analysis_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="frame-analysis"
+        )
+        self._analysis_future: Future[tuple[int, RecognitionResult, float]] | None = None
+        self._analysis_interval_seconds = max(
+            1 / settings.camera.fps,
+            recognition.qr_scan_interval_frames / settings.camera.fps,
+        )
+        self._last_analysis_submitted_at = 0.0
         self._updating_camera_combo = False
         self._last_ocr_result = RecognitionResult()
         self._last_ocr_result_at = 0.0
         self._last_text = ""
+        self._current_mode: ScanMode | None = None
         self._frame_count = 0
         self._last_qr_result = RecognitionResult()
         self._last_gate_score = 0.0
@@ -101,7 +111,13 @@ class MainWindow(QMainWindow):
         self._timer = QTimer(self)
         self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(max(15, round(1000 / settings.camera.fps)))
+        poll_interval_ms = max(4, round(250 / settings.camera.fps))
+        self._timer.start(poll_interval_ms)
+        logger.info(
+            "Preview polling configured; target_fps=%d interval_ms=%d",
+            settings.camera.fps,
+            poll_interval_ms,
+        )
         if not self._camera.open():
             self._show_camera_error()
         else:
@@ -232,6 +248,7 @@ class MainWindow(QMainWindow):
     def _process_tick(self) -> None:
         self._collect_camera_scan_result()
         self._collect_ocr_result()
+        self._collect_analysis_result()
         self._tick_stage = "camera_read"
         stage_started_at = time.perf_counter()
         ok, frame = self._camera.read()
@@ -242,25 +259,7 @@ class MainWindow(QMainWindow):
             frame = cv2.flip(frame, 1)
         now = time.monotonic()
         self._frame_count += 1
-        self._record_preview_frame()
-        if (self._frame_count - 1) % self.settings.recognition.qr_scan_interval_frames == 0:
-            self._tick_stage = "qr_recognition"
-            stage_started_at = time.perf_counter()
-            self._last_qr_result = self._qr.recognize(frame)
-            self._log_slow_stage("qr_recognition", stage_started_at, 0.1)
         qr_result = self._last_qr_result
-        if self._gate is None:
-            self._last_gate_score = self.settings.recognition.text_score_threshold
-        elif self._frame_count % 3 == 1:
-            try:
-                self._tick_stage = "openvino_gate"
-                stage_started_at = time.perf_counter()
-                self._last_gate_score = self._gate.score(frame)
-                self._log_slow_stage("openvino_gate", stage_started_at, 0.1)
-            except Exception as exc:
-                logger.exception("OpenVINO gate inference failed; disabling gate")
-                self.engine_label.setText(f"OpenVINO推論失敗: {exc}\nOCRゲートを常時許可")
-                self._gate = None
         decision = self._policy.decide(
             now=now,
             qr_found=bool(qr_result.items),
@@ -268,7 +267,6 @@ class MainWindow(QMainWindow):
             ocr_busy=self._ocr_future is not None,
         )
         self._set_mode(decision.mode)
-        self.score_label.setText(f"文字スコア: {self._last_gate_score:.4f}")
         overlay_result = RecognitionResult()
         if qr_result.items:
             overlay_result = qr_result
@@ -279,11 +277,68 @@ class MainWindow(QMainWindow):
             self._ocr_future = self._executor.submit(recognize_in_worker, frame.copy())
         elif now - self._last_ocr_result_at < self.settings.recognition.result_hold_seconds:
             overlay_result = self._last_ocr_result
+        self._maybe_submit_analysis(frame, now)
         self._tick_stage = "preview_render"
         stage_started_at = time.perf_counter()
         self._draw_polygons(frame, overlay_result, decision.mode)
         self._show_frame(frame)
+        self._record_preview_frame()
         self._log_slow_stage("preview_render", stage_started_at, 0.1)
+
+    def _maybe_submit_analysis(self, frame: Any, now: float) -> None:
+        if self._analysis_future is not None:
+            return
+        if now - self._last_analysis_submitted_at < self._analysis_interval_seconds:
+            return
+        self._last_analysis_submitted_at = now
+        self._analysis_future = self._analysis_executor.submit(
+            self._analyze_frame,
+            frame.copy(),
+            self._camera.current_index,
+        )
+
+    def _analyze_frame(self, frame: Any, camera_index: int) -> tuple[int, RecognitionResult, float]:
+        started_at = time.perf_counter()
+        qr_result = self._qr.recognize(frame)
+        qr_elapsed = time.perf_counter() - started_at
+        if qr_elapsed >= 0.1:
+            logger.warning(
+                "Slow background analysis; stage=qr_recognition elapsed_ms=%.1f",
+                qr_elapsed * 1000,
+            )
+        gate_score = self.settings.recognition.text_score_threshold
+        if self._gate is not None:
+            started_at = time.perf_counter()
+            gate_score = self._gate.score(frame)
+            gate_elapsed = time.perf_counter() - started_at
+            if gate_elapsed >= 0.1:
+                logger.warning(
+                    "Slow background analysis; stage=openvino_gate elapsed_ms=%.1f",
+                    gate_elapsed * 1000,
+                )
+        return camera_index, qr_result, gate_score
+
+    def _collect_analysis_result(self) -> None:
+        future = self._analysis_future
+        if future is None or not future.done():
+            return
+        self._analysis_future = None
+        try:
+            camera_index, qr_result, gate_score = future.result()
+            if camera_index != self._camera.current_index:
+                logger.info(
+                    "Discarding analysis from previous camera; result_index=%d current_index=%d",
+                    camera_index,
+                    self._camera.current_index,
+                )
+                return
+            self._last_qr_result = qr_result
+            self._last_gate_score = gate_score
+            self.score_label.setText(f"文字スコア: {gate_score:.4f}")
+        except Exception as exc:
+            logger.exception("Background frame analysis failed; disabling OpenVINO gate")
+            self.engine_label.setText(f"フレーム解析失敗: {exc}\nOCRゲートを常時許可")
+            self._gate = None
 
     @staticmethod
     def _log_slow_stage(name: str, started_at: float, threshold_seconds: float) -> None:
@@ -360,6 +415,9 @@ class MainWindow(QMainWindow):
         )
 
     def _set_mode(self, mode: ScanMode) -> None:
+        if mode is self._current_mode:
+            return
+        self._current_mode = mode
         self.mode_label.setText(mode.value)
         colors = {
             ScanMode.QR: ("#123f2d", "#64e6a5"),
@@ -381,18 +439,30 @@ class MainWindow(QMainWindow):
                 cv2.polylines(frame, [points], True, color, 2, cv2.LINE_AA)
 
     def _show_frame(self, frame: Any) -> None:
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        height, width, channels = rgb.shape
-        image = QImage(
-            rgb.data, width, height, channels * width, QImage.Format.Format_RGB888
-        ).copy()
-        self.preview.setPixmap(
-            QPixmap.fromImage(image).scaled(
-                self.preview.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.FastTransformation,
-            )
+        height, width = frame.shape[:2]
+        target_width = max(1, self.preview.width())
+        target_height = max(1, self.preview.height())
+        scale = min(
+            target_width / width,
+            target_height / height,
+            self.settings.ui.preview_max_width / width,
         )
+        display_width = max(1, round(width * scale))
+        display_height = max(1, round(height * scale))
+        if (display_width, display_height) != (width, height):
+            frame = cv2.resize(
+                frame,
+                (display_width, display_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
+        image = QImage(
+            frame.data,
+            display_width,
+            display_height,
+            frame.strides[0],
+            QImage.Format.Format_BGR888,
+        )
+        self.preview.setPixmap(QPixmap.fromImage(image))
 
     def _copy_result(self) -> None:
         QApplication.clipboard().setText(self.result_box.toPlainText())
@@ -516,5 +586,6 @@ class MainWindow(QMainWindow):
         self._watchdog_stop.set()
         self._camera.close()
         self._camera_scan_executor.shutdown(wait=False, cancel_futures=True)
+        self._analysis_executor.shutdown(wait=False, cancel_futures=True)
         self._executor.shutdown(wait=False, cancel_futures=True)
         event.accept()

@@ -20,5 +20,9 @@
     "gate_width": 320,
     "gate_height": 180
   },
-  "ui": {"window_title": "SmartScan - QR / OCR", "mirror_preview": false}
+  "ui": {
+    "window_title": "SmartScan - QR / OCR",
+    "mirror_preview": false,
+    "preview_max_width": 640
+  }
 }

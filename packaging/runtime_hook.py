@@ -6,6 +6,8 @@ import os
 import sys
 from pathlib import Path
 
+os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
+
 # Windowed PyInstaller applications set these streams to None. Some AI
 # dependencies write status messages unconditionally, so provide a safe sink.
 if sys.stdout is None:

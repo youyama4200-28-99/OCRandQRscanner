@@ -35,6 +35,7 @@ class RecognitionSettings:
 class UiSettings:
     window_title: str = "SmartScan - QR / OCR"
     mirror_preview: bool = False
+    preview_max_width: int = 640
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,3 +104,5 @@ def validate_settings(settings: AppSettings) -> None:
         raise ValueError("recognition.text_score_threshold must be 0 or greater")
     if min(recognition.gate_width, recognition.gate_height) < 16:
         raise ValueError("OpenVINO gate dimensions must be at least 16")
+    if not 320 <= settings.ui.preview_max_width <= 3840:
+        raise ValueError("ui.preview_max_width must be between 320 and 3840")

@@ -6,6 +6,8 @@ import os
 import sys
 from pathlib import Path
 
+os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
+
 from .app_logging import configure_logging
 from .config import load_settings
 
