@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -14,6 +16,8 @@ class FakeCapture:
         self.index = index
         self._opened = index in opened_indices
         self.released = False
+        self.read_count = 0
+        self.read_thread_names: list[str] = []
 
     def isOpened(self) -> bool:  # noqa: N802
         return self._opened and not self.released
@@ -23,6 +27,12 @@ class FakeCapture:
 
     def set(self, _property: int, _value: float) -> bool:
         return True
+
+    def read(self) -> tuple[bool, object]:
+        time.sleep(0.005)
+        self.read_count += 1
+        self.read_thread_names.append(threading.current_thread().name)
+        return True, _FakeFrame()
 
     def get(self, property_id: int) -> float:
         values = {
@@ -59,8 +69,38 @@ class CameraTests(unittest.TestCase):
         ):
             camera = Camera(CameraSettings(index=0))
             self.assertTrue(camera.open(2))
+            camera.close()
 
         self.assertEqual(camera.current_index, 2)
+
+    def test_read_returns_latest_frame_without_calling_capture_on_ui_thread(self) -> None:
+        capture = FakeCapture(0, {0})
+        with patch("smartscan.camera.cv2.VideoCapture", return_value=capture):
+            camera = Camera(CameraSettings(index=0))
+            self.assertTrue(camera.open())
+            deadline = time.monotonic() + 0.5
+            ok = False
+            while time.monotonic() < deadline:
+                ok, _frame = camera.read()
+                if ok:
+                    break
+                time.sleep(0.005)
+            started_at = time.perf_counter()
+            camera.read()
+            elapsed = time.perf_counter() - started_at
+            camera.close()
+
+        self.assertTrue(ok)
+        self.assertTrue(capture.read_thread_names)
+        self.assertTrue(
+            all(name.startswith("camera-capture-") for name in capture.read_thread_names)
+        )
+        self.assertLess(elapsed, 0.02)
+
+
+class _FakeFrame:
+    def copy(self) -> _FakeFrame:
+        return self
 
 
 if __name__ == "__main__":
