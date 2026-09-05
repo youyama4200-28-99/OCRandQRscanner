@@ -78,6 +78,8 @@ class MainWindow(QMainWindow):
         self._frame_count = 0
         self._last_qr_result = RecognitionResult()
         self._last_gate_score = 0.0
+        self._preview_fps_window_started = time.monotonic()
+        self._preview_fps_frames = 0
         self._tick_started_at = 0.0
         self._tick_stage = "idle"
         self._last_tick_duration = 0.0
@@ -97,10 +99,13 @@ class MainWindow(QMainWindow):
         )
         self._watchdog.start()
         self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._tick)
         self._timer.start(max(15, round(1000 / settings.camera.fps)))
         if not self._camera.open():
             self._show_camera_error()
+        else:
+            self._reset_preview_fps()
         self._start_camera_scan()
         logger.info("MainWindow initialized")
 
@@ -137,6 +142,7 @@ class MainWindow(QMainWindow):
         camera_row.addWidget(self.camera_scan_button)
         self.camera_status_label = QLabel("カメラを確認中…")
         self.camera_status_label.setWordWrap(True)
+        self.preview_fps_label = QLabel("プレビュー: -- fps")
         self.engine_label = QLabel("AIエンジンを準備中")
         self.engine_label.setWordWrap(True)
         self.score_label = QLabel("文字スコア: --")
@@ -160,6 +166,7 @@ class MainWindow(QMainWindow):
             layout.addWidget(widget)
         layout.addLayout(camera_row)
         layout.addWidget(self.camera_status_label)
+        layout.addWidget(self.preview_fps_label)
         layout.addWidget(self.engine_label)
         layout.addWidget(self.score_label)
         layout.addSpacing(10)
@@ -235,6 +242,7 @@ class MainWindow(QMainWindow):
             frame = cv2.flip(frame, 1)
         now = time.monotonic()
         self._frame_count += 1
+        self._record_preview_frame()
         if (self._frame_count - 1) % self.settings.recognition.qr_scan_interval_frames == 0:
             self._tick_stage = "qr_recognition"
             stage_started_at = time.perf_counter()
@@ -282,6 +290,22 @@ class MainWindow(QMainWindow):
         elapsed = time.perf_counter() - started_at
         if elapsed >= threshold_seconds:
             logger.warning("Slow processing stage; stage=%s elapsed_ms=%.1f", name, elapsed * 1000)
+
+    def _record_preview_frame(self) -> None:
+        self._preview_fps_frames += 1
+        now = time.monotonic()
+        elapsed = now - self._preview_fps_window_started
+        if elapsed < 5.0:
+            return
+        preview_fps = self._preview_fps_frames / elapsed
+        self.preview_fps_label.setText(f"プレビュー: {preview_fps:.1f} fps")
+        logger.info(
+            "Preview frame rate; fps=%.1f frames=%d",
+            preview_fps,
+            self._preview_fps_frames,
+        )
+        self._preview_fps_window_started = now
+        self._preview_fps_frames = 0
 
     def _watch_for_stall(self) -> None:
         reported_start = 0.0
@@ -366,7 +390,7 @@ class MainWindow(QMainWindow):
             QPixmap.fromImage(image).scaled(
                 self.preview.size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
+                Qt.TransformationMode.FastTransformation,
             )
         )
 
@@ -381,6 +405,8 @@ class MainWindow(QMainWindow):
         logger.info("Camera reconnect requested by user")
         if not self._camera.open():
             self._show_camera_error()
+        else:
+            self._reset_preview_fps()
 
     def _start_camera_scan(self) -> None:
         if self._camera_scan_future is not None:
@@ -440,6 +466,7 @@ class MainWindow(QMainWindow):
         )
         if self._camera.open(camera_index):
             self._last_qr_result = RecognitionResult()
+            self._reset_preview_fps()
             self.camera_status_label.setText(f"カメラ {camera_index} を使用中")
             return
 
@@ -462,6 +489,11 @@ class MainWindow(QMainWindow):
                 finally:
                     self._updating_camera_combo = False
                 return
+
+    def _reset_preview_fps(self) -> None:
+        self._preview_fps_window_started = time.monotonic()
+        self._preview_fps_frames = 0
+        self.preview_fps_label.setText("プレビュー: 計測中…")
 
     def _open_log_directory(self) -> None:
         if self._log_path is None:
