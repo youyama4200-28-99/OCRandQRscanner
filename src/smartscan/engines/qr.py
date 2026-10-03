@@ -8,8 +8,9 @@ from ..models import RecognitionResult, RecognizedItem
 
 
 class QrEngine:
-    def __init__(self) -> None:
+    def __init__(self, *, max_width: int | None = None) -> None:
         self._detector = cv2.QRCodeDetector()
+        self.max_width = max_width
 
     @staticmethod
     def _polygon(points: Any) -> tuple[tuple[int, int], ...]:
@@ -18,22 +19,23 @@ class QrEngine:
         return tuple((int(round(point[0])), int(round(point[1]))) for point in points)
 
     def recognize(self, frame: Any) -> RecognitionResult:
-        items: list[RecognizedItem] = []
+        sample = frame
+        scale = 1.0
+        if self.max_width and frame.shape[1] > self.max_width:
+            scale = self.max_width / frame.shape[1]
+            sample = cv2.resize(
+                frame,
+                (self.max_width, max(1, round(frame.shape[0] * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
         try:
-            ok, decoded, points, _ = self._detector.detectAndDecodeMulti(frame)
-            if ok and points is not None:
-                for text, polygon in zip(decoded, points, strict=False):
-                    if text:
-                        items.append(RecognizedItem(text, 1.0, self._polygon(polygon)))
-        except (cv2.error, ValueError):
-            pass
-
-        if not items:
-            try:
-                text, points, _ = self._detector.detectAndDecode(frame)
-                if text:
-                    polygon = points[0] if points is not None and len(points) == 1 else points
-                    items.append(RecognizedItem(text, 1.0, self._polygon(polygon)))
-            except cv2.error:
+            text, points, _ = self._detector.detectAndDecode(sample)
+            if not text:
                 return RecognitionResult()
-        return RecognitionResult(tuple(items))
+            polygon = points[0] if points is not None and len(points) == 1 else points
+            scaled_polygon = tuple(
+                (round(x / scale), round(y / scale)) for x, y in self._polygon(polygon)
+            )
+            return RecognitionResult((RecognizedItem(text, 1.0, scaled_polygon),))
+        except cv2.error:
+            return RecognitionResult()

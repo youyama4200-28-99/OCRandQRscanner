@@ -17,6 +17,9 @@ class ConfigTests(unittest.TestCase):
             settings = load_settings(path)
         self.assertEqual(settings.camera.index, 2)
         self.assertEqual(settings.camera.width, 1280)
+        self.assertEqual(settings.camera.scan_max_index, 5)
+        self.assertEqual(settings.recognition.ocr_cpu_threads, 4)
+        self.assertEqual(settings.ui.preview_max_width, 640)
 
     def test_unknown_setting_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

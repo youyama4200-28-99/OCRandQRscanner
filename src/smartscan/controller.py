@@ -38,3 +38,7 @@ class AutoSwitchPolicy:
                 self._last_ocr_started = now
             return ScanDecision(ScanMode.OCR, run_ocr)
         return ScanDecision(ScanMode.SEARCHING, False)
+
+    def ocr_completed(self, now: float) -> None:
+        """Start the OCR cooldown at completion, not at submission."""
+        self._last_ocr_started = now

@@ -1,9 +1,18 @@
 {
-  "camera": {"index": 0, "width": 1280, "height": 720, "fps": 30},
+  "camera": {
+    "index": 0,
+    "width": 1280,
+    "height": 720,
+    "fps": 30,
+    "scan_max_index": 5
+  },
   "recognition": {
     "language": "japan",
     "minimum_confidence": 0.55,
-    "ocr_interval_seconds": 1.2,
+    "ocr_interval_seconds": 3.0,
+    "ocr_cpu_threads": 4,
+    "qr_scan_interval_frames": 2,
+    "qr_max_width": 640,
     "qr_hold_seconds": 1.0,
     "result_hold_seconds": 3.0,
     "text_score_threshold": 0.018,
@@ -11,6 +20,9 @@
     "gate_width": 320,
     "gate_height": 180
   },
-  "ui": {"window_title": "SmartScan - QR / OCR", "mirror_preview": false}
+  "ui": {
+    "window_title": "SmartScan - QR / OCR",
+    "mirror_preview": false,
+    "preview_max_width": 640
+  }
 }
-
