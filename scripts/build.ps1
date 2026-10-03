@@ -11,6 +11,8 @@ $bundlePath = Join-Path $projectRoot "dist\SmartScan"
 $executablePath = Join-Path $bundlePath "SmartScan.exe"
 $settingsSource = Join-Path $projectRoot "config\settings.json"
 $settingsDestination = Join-Path $bundlePath "config"
+$licensesSource = Join-Path $projectRoot "licenses"
+$licensesDestination = Join-Path $bundlePath "licenses"
 $smokeLog = Join-Path $projectRoot "build\bundle-smoke-test.log"
 
 if (-not (Test-Path -LiteralPath $venvPython)) {
@@ -26,6 +28,10 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed with code $LASTEXITCO
 New-Item -ItemType Directory -Path $settingsDestination -Force | Out-Null
 Copy-Item -LiteralPath $settingsSource -Destination $settingsDestination -Force
 Copy-Item -LiteralPath (Join-Path $projectRoot "README.md") -Destination $bundlePath -Force
+Copy-Item -LiteralPath (Join-Path $projectRoot "LICENSE") -Destination $bundlePath -Force
+Copy-Item -LiteralPath (Join-Path $projectRoot "THIRD_PARTY_NOTICES.md") `
+    -Destination $bundlePath -Force
+Copy-Item -LiteralPath $licensesSource -Destination $licensesDestination -Recurse -Force
 
 if (-not $SkipSmokeTest) {
     $env:SMARTSCAN_SMOKE_LOG = $smokeLog
