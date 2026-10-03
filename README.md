@@ -103,6 +103,16 @@ WindowsではMedia Foundationを優先し、初期化失敗時は一度再試行
 
 詳細は [docs/BRANCHING.md](docs/BRANCHING.md) を参照してください。
 
+## ライセンス
+
+SmartScanのソースコードは[MIT License](LICENSE)で公開しています。依存ライブラリと
+初回起動時に取得するOCRモデルには、それぞれのライセンスが適用されます。詳細は
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)を参照してください。
+
+Windows版はQt/PySide6をLGPL-3.0条件で動的に読み込む`onedir`形式です。配布時は
+`SmartScan.exe`だけを取り出さず、ライセンス文書と交換可能なQt DLLを含む
+`SmartScan`フォルダー全体を配布してください。
+
 ## 注意事項
 
 - GPU/NPU利用には対応するIntelドライバーが必要です。利用できない場合、`AUTO`は通常CPUへフォールバックします。
